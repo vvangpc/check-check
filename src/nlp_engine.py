@@ -4,15 +4,19 @@ from src.config import config, DICT_USER_PATH
 
 class NLPEngine:
     def __init__(self):
-        print("初始化 NLP 引擎（结巴分词）...")
-        jieba.initialize()
-        try:
-            jieba.load_userdict(DICT_USER_PATH)
-        except Exception as e:
-            print(f"未能成功加载用户字典 {DICT_USER_PATH}: {e}")
-            
         self.useless_regex = config.useless_words_regex
-        print("NLP 引擎初始化完成！")
+        self._initialized = False
+
+    def _lazy_init(self):
+        if not self._initialized:
+            print("首次调用：初始化 NLP 引擎（结巴分词）...")
+            jieba.initialize()
+            try:
+                jieba.load_userdict(DICT_USER_PATH)
+            except Exception as e:
+                print(f"未能成功加载用户字典 {DICT_USER_PATH}: {e}")
+            print("NLP 引擎初始化完成！")
+            self._initialized = True
 
     def clean_text(self, text):
         """在分词前去除设定的无用修饰词"""
@@ -23,6 +27,7 @@ class NLPEngine:
 
     def tokenize(self, text):
         """精确分词，返回词组列表"""
+        self._lazy_init()
         seg_list = jieba.cut(text, cut_all=False)
         return list(seg_list)
         

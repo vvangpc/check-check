@@ -1,5 +1,7 @@
 import sys
 import re
+import json
+import os
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QTextEdit, QLabel, QSplitter, 
                              QMessageBox, QListWidget, QListWidgetItem, QMenu, QDialog,
@@ -55,12 +57,22 @@ class ThemeDialog(QDialog):
     def choose_color(self, target):
         color = QColorDialog.getColor()
         if color.isValid():
+            hex_color = color.name()
             if target == "claims":
                 self.main_window.set_widget_theme(self.main_window.txt_claims, color)
+                self.main_window.current_theme["claims"] = hex_color
             elif target == "specs":
                 self.main_window.set_widget_theme(self.main_window.txt_specs, color)
+                self.main_window.current_theme["specs"] = hex_color
             elif target == "report":
                 self.main_window.set_widget_theme(self.main_window.list_report, color)
+                self.main_window.current_theme["report"] = hex_color
+                
+            try:
+                with open(self.main_window.settings_file, "w", encoding="utf-8") as f:
+                    json.dump(self.main_window.current_theme, f, ensure_ascii=False, indent=4)
+            except Exception:
+                pass
 
 class PatentHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -91,6 +103,7 @@ class PatentHighlighter(QSyntaxHighlighter):
 
 class WorkerThread(QThread):
     finished = pyqtSignal(list, list) # report, issues
+    error = pyqtSignal(str)
     
     def __init__(self, claims_text, specs_text):
         super().__init__()
@@ -98,8 +111,12 @@ class WorkerThread(QThread):
         self.specs_text = specs_text
         
     def run(self):
-        report, issues = checker.analyze_patent(self.claims_text, self.specs_text)
-        self.finished.emit(report, issues)
+        try:
+            report, issues = checker.analyze_patent(self.claims_text, self.specs_text)
+            self.finished.emit(report, issues)
+        except Exception as e:
+            import traceback
+            self.error.emit(f"审查过程发生致命崩溃: {str(e)}\n\n报错详情：\n{traceback.format_exc()}")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -110,6 +127,20 @@ class MainWindow(QMainWindow):
         self.specs_text = ""
         self.worker = None
         self.last_focused_box = None
+        
+        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self.current_theme = {
+            "claims": "#ffffff",
+            "specs": "#ffffff",
+            "report": "#ffffff"
+        }
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                    self.current_theme.update(saved)
+            except Exception:
+                pass
 
         self.initUI()
         self.init_highlighters()
@@ -226,9 +257,9 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.lbl_stats)
 
         # 初始主题设置
-        self.set_widget_theme(self.txt_claims, QColor("#ffffff"))
-        self.set_widget_theme(self.txt_specs, QColor("#ffffff"))
-        self.set_widget_theme(self.list_report, QColor("#ffffff"))
+        self.set_widget_theme(self.txt_claims, QColor(self.current_theme["claims"]))
+        self.set_widget_theme(self.txt_specs, QColor(self.current_theme["specs"]))
+        self.set_widget_theme(self.list_report, QColor(self.current_theme["report"]))
         
         # 绑定点击事件
         self.list_report.itemDoubleClicked.connect(self.on_report_double_clicked)
@@ -340,7 +371,19 @@ class MainWindow(QMainWindow):
         # 启动多线程进行检查
         self.worker = WorkerThread(self.claims_text, self.specs_text)
         self.worker.finished.connect(self.on_check_finished)
+        self.worker.error.connect(self.on_check_error)
         self.worker.start()
+
+    def on_check_error(self, err_msg):
+        self.btn_check.setEnabled(True)
+        self.lbl_status.setText("分析中止，遭遇严重异常")
+        self.progress_bar.setVisible(False)
+        self.list_report.clear()
+        
+        item = QListWidgetItem(err_msg)
+        self.list_report.addItem(item)
+        
+        QMessageBox.critical(self, "解析引擎崩溃", "专利检查过程因为不规则文字引发了解析崩溃，详情请查看报告窗口底侧输出！")
 
     def on_check_finished(self, report_strings, issues):
         self.btn_check.setEnabled(True)

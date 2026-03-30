@@ -2,6 +2,13 @@ import re
 from src.config import config
 
 class RulesChecker:
+    def __init__(self):
+        self.pat_claims_split = re.compile(r'^(\d+)[\.、]\s*(.*)', re.MULTILINE)
+        self.pat_dep_general = re.compile(r'根据权利要求([\d~、和及到了或\-\s至]+)(?:中任一项)?所述')
+        self.pat_dep_title = re.compile(r'根据权利要求[\d~、和及到了或\-\s至]+(?:中任一项)?所述的?\s*([^，,。]+)')
+        self.pat_ref_nums = re.compile(r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)\s*([\)）]?)')
+        self.pat_antecedent = re.compile(r'(所述|该)([\u4e00-\u9fa5]{2,10})')
+        
     def check_sensitive_words(self, text):
         """扫描全文明感词和残破词汇（例如‘大概’、‘最好是’、‘权利要’）"""
         issues = []
@@ -31,8 +38,7 @@ class RulesChecker:
         
         claims_dict = {} 
         
-        pattern = re.compile(r'^(\d+)[\.、]\s*(.*)', re.MULTILINE)
-        matches = list(pattern.finditer(claims_text))
+        matches = list(self.pat_claims_split.finditer(claims_text))
         
         for i in range(len(matches)):
             m = matches[i]
@@ -53,13 +59,13 @@ class RulesChecker:
         
         for num, data in claims_dict.items():
             text = data['text']
-            dep_match_general = re.search(r'根据权利要求([\d~、和及到了或\-\s]+)(?:中任一项)?所述', text)
+            dep_match_general = self.pat_dep_general.search(text)
             if dep_match_general:
                 dep_str = dep_match_general.group(1).strip()
                 nums_str = re.findall(r'\d+', dep_str)
                 deps = [int(n) for n in nums_str]
                 
-                range_matches = re.finditer(r'(\d+)\s*[~到\-]\s*(\d+)', dep_str)
+                range_matches = re.finditer(r'(\d+)\s*[~到\-至]\s*(\d+)', dep_str)
                 for rm in range_matches:
                     start_n = int(rm.group(1))
                     end_n = int(rm.group(2))
@@ -69,7 +75,7 @@ class RulesChecker:
                 data['deps'] = sorted(list(set(deps)))
                 
                 # 主题名称一致性检查
-                dep_title_match = re.search(r'根据权利要求[\d~、和及到了或\-\s]+(?:中任一项)?所述的?\s*([^，,。]+)', text)
+                dep_title_match = self.pat_dep_title.search(text)
                 if dep_title_match and data['deps']:
                     dep_title = dep_title_match.group(1).strip()
                     if dep_title not in ["其特征在于", "装置", "方法"]: # 过滤一些异常或省略的写法
@@ -79,7 +85,7 @@ class RulesChecker:
                             ptm = re.match(r'^\d+[\.、]\s*([^，,。]+)', parent_text)
                             if ptm:
                                 p_raw = ptm.group(1).strip()
-                                p_dep_m = re.match(r'^根据权利要求[\d~、和及到了或\-\s]+(?:中任一项)?所述的?\s*(.+)', p_raw)
+                                p_dep_m = re.match(r'^根据权利要求[\d~、和及到了或\-\s至]+(?:中任一项)?所述的?\s*(.+)', p_raw)
                                 if p_dep_m:
                                     p_title = p_dep_m.group(1).strip()
                                 else:
@@ -150,14 +156,12 @@ class RulesChecker:
         issues = []
         report = []
         
-        pattern = re.compile(r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)\s*([\)）]?)')
-        
         name_to_nums = {}
         num_to_names = {}
         
         exclude_words = ["权利要求", "项", "第", "步骤", "图", "为", "是", "说明书"]
         
-        for match in pattern.finditer(claims_text):
+        for match in self.pat_ref_nums.finditer(claims_text):
             name = match.group(1)
             left_bracket = match.group(2)
             num = match.group(3)
@@ -177,7 +181,7 @@ class RulesChecker:
             name_to_nums.setdefault(name, set()).add(num)
             num_to_names.setdefault(num, set()).add(name)
             
-        for match in pattern.finditer(specs_text):
+        for match in self.pat_ref_nums.finditer(specs_text):
             name = match.group(1)
             num = match.group(3)
             is_excluded = any(ex_word in name for ex_word in exclude_words)
@@ -188,6 +192,20 @@ class RulesChecker:
         def unify_names(names_set):
             if not names_set: return []
             cores = set(names_set)
+            
+            # --- 危险修饰词强制隔离机制（防止"第一齿轮"与"第二齿轮"被合并） ---
+            if len(names_set) > 1:
+                distinguish_words = ["第一", "第二", "第三", "第四", "第五", "第六",
+                                     "左", "右", "前", "后", "上", "下", "主", "副", "内", "外"]
+                found_flags = set()
+                for name in names_set:
+                    for dw in distinguish_words:
+                        if dw in name:
+                            found_flags.add(dw)
+                            break
+                if len(found_flags) > 1:
+                    return list(names_set)
+            
             changed = True
             while changed and len(cores) > 1:
                 changed = False
@@ -272,7 +290,6 @@ class RulesChecker:
         issues = []
         report = []
         
-        pattern = re.compile(r'(所述|该)([\u4e00-\u9fa5]{2,10})')
         # 记录已经出现过的词，如果词已经找过了就不必重复找，减轻由于错误造成的满屏红
         reported = set()
         
@@ -280,13 +297,13 @@ class RulesChecker:
             text = data['text']
             start_offset = data['start']
             
-            for match in pattern.finditer(text):
+            for match in self.pat_antecedent.finditer(text):
                 word = match.group(2)
                 
                 if word.startswith("的"):
                     word = word[1:]
                     
-                if word in ["发明", "权利要求", "特征", "方法", "系统", "装置", "步骤"]: 
+                if word in ["发明", "权利要求", "特征", "方法", "系统", "装置", "步骤", "其", "其余", "其它", "其他", "上述"]: 
                     continue
                 
                 ancestors = set()
