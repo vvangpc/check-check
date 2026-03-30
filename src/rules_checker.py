@@ -1,3 +1,4 @@
+import re
 from src.config import config
 
 class RulesChecker:
@@ -23,17 +24,322 @@ class RulesChecker:
                     "components": match.groups()
                 })
         return structures
+
+    def _check_claim_dependencies(self, claims_text):
+        issues = []
+        report = []
+        
+        claims_dict = {} 
+        
+        pattern = re.compile(r'^(\d+)[\.、]\s*(.*)', re.MULTILINE)
+        matches = list(pattern.finditer(claims_text))
+        
+        for i in range(len(matches)):
+            m = matches[i]
+            claim_num = int(m.group(1))
+            start_pos = m.start()
+            if i + 1 < len(matches):
+                end_pos = matches[i+1].start()
+            else:
+                end_pos = len(claims_text)
+                
+            claim_text = claims_text[start_pos:end_pos]
+            claims_dict[claim_num] = {
+                "text": claim_text,
+                "start": start_pos,
+                "end": end_pos,
+                "deps": [] 
+            }
+        
+        for num, data in claims_dict.items():
+            text = data['text']
+            dep_match_general = re.search(r'根据权利要求([\d~、和及到了或\-\s]+)(?:中任一项)?所述', text)
+            if dep_match_general:
+                dep_str = dep_match_general.group(1).strip()
+                nums_str = re.findall(r'\d+', dep_str)
+                deps = [int(n) for n in nums_str]
+                
+                range_matches = re.finditer(r'(\d+)\s*[~到\-]\s*(\d+)', dep_str)
+                for rm in range_matches:
+                    start_n = int(rm.group(1))
+                    end_n = int(rm.group(2))
+                    if start_n < end_n:
+                        deps.extend(list(range(start_n, end_n + 1)))
+                
+                data['deps'] = sorted(list(set(deps)))
+                
+                # 主题名称一致性检查
+                dep_title_match = re.search(r'根据权利要求[\d~、和及到了或\-\s]+(?:中任一项)?所述的?\s*([^，,。]+)', text)
+                if dep_title_match and data['deps']:
+                    dep_title = dep_title_match.group(1).strip()
+                    if dep_title not in ["其特征在于", "装置", "方法"]: # 过滤一些异常或省略的写法
+                        parent_num = data['deps'][0]
+                        if parent_num in claims_dict:
+                            parent_text = claims_dict[parent_num]['text']
+                            ptm = re.match(r'^\d+[\.、]\s*([^，,。]+)', parent_text)
+                            if ptm:
+                                p_raw = ptm.group(1).strip()
+                                p_dep_m = re.match(r'^根据权利要求[\d~、和及到了或\-\s]+(?:中任一项)?所述的?\s*(.+)', p_raw)
+                                if p_dep_m:
+                                    p_title = p_dep_m.group(1).strip()
+                                else:
+                                    p_title = p_raw
+                                    
+                                p_short = p_title[2:] if p_title.startswith("一种") else p_title
+                                
+                                if dep_title not in [p_title, p_short]:
+                                    msg = f"权利要求主题名称不一致：权利要求 {num} 引用了【{dep_title}】，但被引用的权利要求 {parent_num} 主题为【{p_title}】！"
+                                    report.append(msg)
+                                    issues.append({
+                                        "text": msg, "type": "claims_error",
+                                        "span": (data["start"] + dep_title_match.start(1), data["start"] + dep_title_match.end(1)),
+                                        "target": "claims"
+                                    })
+                
+        multi_claims = set()
+        for num, data in claims_dict.items():
+            deps = data['deps']
+            
+            is_multi = len(deps) > 1
+            if is_multi:
+                multi_claims.add(num)
+                
+            # 1. 多项从属权利要求作为另一项多项从属权利要求的基础 （多引多）
+            if is_multi:
+                for d in deps:
+                    if d in multi_claims:
+                        msg = f"多引多违规：多项从属权利要求 {num} 引用了另一项多项从属权利要求 {d}！"
+                        report.append(msg)
+                        issues.append({
+                            "text": msg, "type": "claims_error",
+                            "span": (data["start"], data["end"])
+                        })
+                        
+            # 2. 跳项引用检查
+            for d in deps:
+                if d >= num:
+                    msg = f"跳项引用违规：权利要求 {num} 不能引用其自身或其后的权利要求 {d}！"
+                    report.append(msg)
+                    issues.append({
+                        "text": msg, "type": "claims_error",
+                        "span": (data["start"], data["end"])
+                    })
+                    
+            # 3. 闭环检查
+            def has_cycle(current, visited):
+                if current in visited:
+                    return True
+                visited.add(current)
+                if current in claims_dict:
+                    for parent in claims_dict[current]['deps']:
+                        if has_cycle(parent, visited.copy()):
+                            return True
+                return False
+                
+            if has_cycle(num, set()):
+                 msg = f"死循环引用违规：权利要求 {num} 存在死循环引用关系！"
+                 report.append(msg)
+                 issues.append({
+                     "text": msg, "type": "claims_error",
+                     "span": (data["start"], data["end"])
+                 })
+                     
+        return report, issues, claims_dict
+
+    def _check_reference_numerals(self, claims_text, specs_text):
+        issues = []
+        report = []
+        
+        pattern = re.compile(r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)\s*([\)）]?)')
+        
+        name_to_nums = {}
+        num_to_names = {}
+        
+        exclude_words = ["权利要求", "项", "第", "步骤", "图", "为", "是", "说明书"]
+        
+        for match in pattern.finditer(claims_text):
+            name = match.group(1)
+            left_bracket = match.group(2)
+            num = match.group(3)
+            right_bracket = match.group(4)
+            
+            is_excluded = any(ex_word in name for ex_word in exclude_words)
+            if is_excluded: continue
+            
+            if not left_bracket or not right_bracket:
+                msg = f"形式要求：权利要求中附图标记未完全带括号：【{name}{left_bracket}{num}{right_bracket}】，建议修改为【{name}({num})】"
+                report.append(msg)
+                issues.append({
+                    "text": msg, "type": "claims_warning",
+                    "span": match.span(), "word": match.group()
+                })
+                
+            name_to_nums.setdefault(name, set()).add(num)
+            num_to_names.setdefault(num, set()).add(name)
+            
+        for match in pattern.finditer(specs_text):
+            name = match.group(1)
+            num = match.group(3)
+            is_excluded = any(ex_word in name for ex_word in exclude_words)
+            if is_excluded: continue
+            name_to_nums.setdefault(name, set()).add(num)
+            num_to_names.setdefault(num, set()).add(name)
+            
+        def unify_names(names_set):
+            if not names_set: return []
+            cores = set(names_set)
+            changed = True
+            while changed and len(cores) > 1:
+                changed = False
+                core_list = list(cores)
+                for i in range(len(core_list)):
+                    for j in range(i+1, len(core_list)):
+                        c1 = core_list[i]
+                        c2 = core_list[j]
+                        lcs = ""
+                        min_len = min(len(c1), len(c2))
+                        for k in range(1, min_len + 1):
+                            if c1[-k:] == c2[-k:]:
+                                lcs = c1[-k:]
+                            else:
+                                break
+                        if len(lcs) >= 2 or lcs == c1 or lcs == c2:
+                            cores.remove(c1)
+                            cores.remove(c2)
+                            cores.add(lcs)
+                            changed = True
+                            break
+                    if changed:
+                        break
+            return list(cores)
+
+        unified_num_to_names = {}
+        unified_name_to_nums = {}
+        
+        for num, names in num_to_names.items():
+            unified = unify_names(names)
+            unified_num_to_names[num] = unified
+            for uname in unified:
+                unified_name_to_nums.setdefault(uname, set()).add(num)
+
+        # 异名同号检查（致命）
+        for num, unames in unified_num_to_names.items():
+            if len(unames) > 1:
+                msg = f"附图标记冲突：标号【{num}】关联了多个不同的部件核心名称：{', '.join(unames)}！"
+                
+                target = "claims"
+                span = (0, 0)
+                uname = next(iter(unames))
+                pattern_str = r'[\u4e00-\u9fa5]*?' + re.escape(uname) + r'\s*[\(（]?\s*' + str(num) + r'[a-zA-Z]?[\)）]?'
+                for text, tgt in [(claims_text, "claims"), (specs_text, "specs")]:
+                    match = re.search(pattern_str, text)
+                    if match:
+                        span = match.span()
+                        target = tgt
+                        break
+                        
+                report.append(msg)
+                issues.append({
+                    "text": msg, "type": "claims_error",
+                    "span": span, "target": target
+                })
+                
+        # 同名异号检查（警告）
+        for uname, nums in unified_name_to_nums.items():
+            if len(nums) > 1:
+                msg = f"部件编号不一：部件核心【{uname}】关联了多种标号：{', '.join(nums)}！"
+                
+                target = "claims"
+                span = (0, 0)
+                num_iter = next(iter(nums))
+                pattern_str = r'[\u4e00-\u9fa5]*?' + re.escape(uname) + r'\s*[\(（]?\s*' + str(num_iter) + r'[a-zA-Z]?[\)）]?'
+                for text, tgt in [(claims_text, "claims"), (specs_text, "specs")]:
+                    match = re.search(pattern_str, text)
+                    if match:
+                        span = match.span()
+                        target = tgt
+                        break
+                        
+                report.append(msg)
+                issues.append({
+                    "text": msg, "type": "claims_warning",
+                    "span": span, "target": target
+                })
+
+        return report, issues
+
+    def _check_antecedent_basis(self, claims_text, claims_dict):
+        issues = []
+        report = []
+        
+        pattern = re.compile(r'(所述|该)([\u4e00-\u9fa5]{2,10})')
+        # 记录已经出现过的词，如果词已经找过了就不必重复找，减轻由于错误造成的满屏红
+        reported = set()
+        
+        for num, data in claims_dict.items():
+            text = data['text']
+            start_offset = data['start']
+            
+            for match in pattern.finditer(text):
+                word = match.group(2)
+                
+                if word.startswith("的"):
+                    word = word[1:]
+                    
+                if word in ["发明", "权利要求", "特征", "方法", "系统", "装置", "步骤"]: 
+                    continue
+                
+                ancestors = set()
+                # 寻找所有的父权项
+                def get_ancestors(curr):
+                    if curr in claims_dict:
+                        for p in claims_dict[curr]['deps']:
+                            if p not in ancestors:
+                                ancestors.add(p)
+                                get_ancestors(p)
+                get_ancestors(num)
+                
+                search_pool = ""
+                for a in sorted(list(ancestors)):
+                    if a in claims_dict:
+                        search_pool += claims_dict[a]['text'] + "\n"
+                        
+                search_pool += text[:match.start()]
+                
+                found_basis = False
+                max_check_len = min(6, len(word))
+                for length in range(max_check_len, 1, -1):
+                    test_word = word[:length]
+                    if test_word in search_pool:
+                        found_basis = True
+                        break
+                
+                if not found_basis:
+                    # 这意味着没有以“一种XXX”或者“XXX”的形式出现过
+                    display_word = word[:6] + "..." if len(word) > 6 else word
+                    msg_key = f"{num}-{display_word}"
+                    if msg_key not in reported:
+                        msg = f"缺乏前序基础：权利要求 {num} 出现了“{match.group()}”，但在其前序依赖中未找到“{display_word}”的基础声明！"
+                        report.append(msg)
+                        issues.append({
+                            "text": msg, "type": "claims_error",
+                            "span": (start_offset + match.start(), start_offset + match.end()),
+                            "word": match.group()
+                        })
+                        reported.add(msg_key)
+                    
+        return report, issues
         
     def analyze_patent(self, claims_text, specs_text):
         """综合分析：汇总缺陷报告，并提供结构化错误供GUI高亮和跳转使用"""
         report = []
-        issues = [] # 保存提供给界面跳转的元信息
+        issues = []
         
         # 1. 扫描权利要求中的敏感词/缺陷
         claims_issues = self.check_sensitive_words(claims_text)
         if claims_issues:
             for issue in claims_issues:
-                msg = f"[级别: 确定错误] 权利要求使用了不规范限定或遗漏词：【{issue['word']}】"
+                msg = f"权利要求使用了不规范限定或遗漏词：【{issue['word']}】"
                 report.append(msg)
                 issues.append({
                     "text": msg,
@@ -41,34 +347,102 @@ class RulesChecker:
                     "span": issue['position']
                 })
                 
-        # 2. 说明书部分：取消敏感词/形缺审查，因为说明书允许使用“等、大致、特别的”
-        # 原有的 specs_issues 扫描段落被移除
+        # 2. 增强检查
+        
+        # 2.1 引用关系
+        dep_report, dep_issues, claims_dict = self._check_claim_dependencies(claims_text)
+        report.extend(dep_report)
+        issues.extend(dep_issues)
+        
+        # 2.2 前序基础
+        ant_report, ant_issues = self._check_antecedent_basis(claims_text, claims_dict)
+        report.extend(ant_report)
+        issues.extend(ant_issues)
+        
+        # 2.3 附图标记
+        ref_report, ref_issues = self._check_reference_numerals(claims_text, specs_text)
+        report.extend(ref_report)
+        issues.extend(ref_issues)
+                
+        # 2.4 说明书附图审查
+        fig_report, fig_issues = self._check_figures_in_specs(specs_text)
+        report.extend(fig_report)
+        issues.extend(fig_issues)
                 
         # 3. 抽取权利要求的固定组合关系，验证说明书中是否出现（“缺少说明书支持”检查）
         c_structures = self.check_collocation_structures(claims_text)
-        import re
         for st in c_structures:
-            # st['components'] 是根据正则捕获的一串名词组合
             for component in st['components']:
-                if component and component not in specs_text:
-                    msg = f"[级别: 可以错误/缺乏支持] 权利要求中的特征【{component}】未在说明书中找到关联支持！"
-                    report.append(msg)
-                    # 在权利要求中定位该词，供高亮使用
-                    try:
-                        match = re.search(re.escape(component), claims_text)
-                        if match:
-                            issues.append({
-                                "text": msg,
-                                "type": "claims_warning",
-                                "span": match.span(),
-                                "word": component
-                            })
-                    except Exception:
-                        pass
+                if component:
+                    # 检查说明书是否支持（包含同义词检查）
+                    is_supported = False
+                    if component in specs_text:
+                        is_supported = True
+                    else:
+                        # 查找同义词
+                        synonyms = config.synonyms_dict.get(component, [])
+                        for syn in synonyms:
+                            if syn in specs_text:
+                                is_supported = True
+                                break
+                    
+                    if not is_supported:
+                        msg = f"缺乏支持：权利要求中的特征【{component}】未在说明书中找到关联支持（含同义词检索）！"
+                        report.append(msg)
+                        try:
+                            match = re.search(re.escape(component), claims_text)
+                            if match:
+                                issues.append({
+                                    "text": msg,
+                                    "type": "claims_warning",
+                                    "span": match.span(),
+                                    "word": component
+                                })
+                        except Exception:
+                            pass
+
 
         if not report:
             report.append("恭喜！未在本文档中检测到明显的形缺问题。")
             
+        return report, issues
+        
+    def _check_figures_in_specs(self, specs_text):
+        issues = []
+        report = []
+        
+        desc_start = specs_text.find("附图说明")
+        if desc_start == -1:
+            desc_start = specs_text.find("附 图 说 明")
+            
+        impl_start = specs_text.find("具体实施方式")
+        if impl_start == -1:
+            impl_start = specs_text.find("具体实施例")
+            
+        if desc_start != -1 and impl_start != -1 and desc_start < impl_start:
+            desc_text = specs_text[desc_start:impl_start]
+            impl_text = specs_text[impl_start:]
+            
+            figures_in_desc = set(re.findall(r'图\s*\d+[a-zA-Z]?', desc_text))
+            
+            for fig in figures_in_desc:
+                norm_fig = fig.replace(" ", "")
+                num_part = re.search(r'\d+[a-zA-Z]?', fig).group()
+                pattern = r'图\s*' + num_part + r'(?![0-9a-zA-Z])'
+                
+                if not re.search(pattern, impl_text):
+                    msg = f"附图说明遗漏：说明书中描述了【{norm_fig}】，但在具体实施方式中未找到对该图的具体引用！"
+                    report.append(msg)
+                    
+                    match = re.search(pattern, desc_text)
+                    span = (0, 0)
+                    if match:
+                        span = (desc_start + match.start(), desc_start + match.end())
+                        
+                    issues.append({
+                        "text": msg, "type": "claims_error",
+                        "span": span, "target": "specs"
+                    })
         return report, issues
 
 checker = RulesChecker()
