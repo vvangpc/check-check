@@ -268,10 +268,11 @@ class MainWindow(QMainWindow):
         self.highlighter_claims = PatentHighlighter(self.txt_claims.document())
         self.highlighter_specs = PatentHighlighter(self.txt_specs.document())
         
-        # 将配置中静态可预测的问题词汇预先加载进实时高亮器 (比如敏感词)
+        # 将配置中的正则预装到 Highlighter (红色底)
         if config.minganci_regex:
             qregex = QRegularExpression(config.minganci_regex.pattern)
             self.highlighter_claims.set_rules([qregex], QColor("#FF6B6B"))
+            self.highlighter_specs.set_rules([qregex], QColor("#FF6B6B"))
 
     def set_widget_theme(self, widget, color):
         font_color = "#000000" if color.lightness() > 128 else "#ffffff"
@@ -337,18 +338,17 @@ class MainWindow(QMainWindow):
         try:
             self.list_report.clear()
             self.list_report.addItem(f"> 成功读取文件: {file_path}")
-            raw_text = parse_file(file_path)
+            full_text = parse_file(file_path)
+            result = split_patent_document(full_text)
             
-            # 自动分割逻辑
-            parts = split_patent_document(raw_text)
-            self.claims_text = parts.get("claims", "")
-            self.specs_text = parts.get("specification", "")
-
-            # 填充 UI
-            self.txt_claims.setPlainText(self.claims_text)
-            self.txt_specs.setPlainText(self.specs_text)
-            
-            # 启用审查按钮
+            if not result["claims"] and not result["specification"]:
+                QMessageBox.warning(self, "分割失败", "自动分割失败：无法准确定位【权利要求】与【技术领域】锚点。请您手动复制原文至对应文本框内！")
+                self.txt_claims.setText(full_text)
+                self.txt_specs.clear()
+            else:
+                self.txt_claims.setText(result["claims"])
+                self.txt_specs.setText(result["specification"])
+                
             self.btn_check.setEnabled(True)
             self.list_report.addItem("> 文档分割完成！如果不准请手动截断复制修正，确认无误后请点击「开始形式审查」。")
             self.update_stats()
@@ -359,6 +359,14 @@ class MainWindow(QMainWindow):
     def run_checks(self):
         self.claims_text = self.txt_claims.toPlainText()
         self.specs_text = self.txt_specs.toPlainText()
+        
+        if not self.claims_text or not self.specs_text:
+            QMessageBox.warning(self, "警告", "请确保两侧都有文本内容！")
+            return
+            
+        if self.worker and self.worker.isRunning():
+            self.worker.quit()
+            self.worker.wait()
 
         self.list_report.clear()
         self.list_report.addItem("正在进行深度逻辑及形式分析，请稍候...")

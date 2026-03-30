@@ -10,7 +10,6 @@ DICT_USER_PATH = os.path.join(DICT_DIR, "userdict.txt")
 DICT_USELESS_PATH = os.path.join(DICT_DIR, "useless_word.txt")
 DICT_MINGANCI_PATH = os.path.join(DICT_DIR, "minganci.txt")
 DICT_GUDINGDAPEI_PATH = os.path.join(DICT_DIR, "gudingdapei.txt")
-...
 DICT_WEIZHI_PATH = os.path.join(DICT_DIR, "weizhiguanxi.txt")
 DICT_SYNONYMS_PATH = os.path.join(DICT_DIR, "synonyms.txt")
 

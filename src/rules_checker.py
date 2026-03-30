@@ -9,6 +9,24 @@ class RulesChecker:
         self.pat_ref_nums = re.compile(r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)\s*([\)）]?)')
         self.pat_antecedent = re.compile(r'(所述|该)([\u4e00-\u9fa5]{2,10})')
         
+    def _has_cycle(self, num, claims_dict, visited=None):
+        if visited is None: visited = set()
+        if num in visited: return True
+        visited.add(num)
+        for parent in claims_dict.get(num, {}).get('deps', []):
+            if self._has_cycle(parent, claims_dict, visited.copy()):
+                return True
+        return False
+        
+    def _get_ancestors(self, curr, claims_dict, ancestors=None):
+        if ancestors is None: ancestors = set()
+        if curr in claims_dict:
+            for p in claims_dict.get(curr, {}).get('deps', []):
+                if p not in ancestors:
+                    ancestors.add(p)
+                    self._get_ancestors(p, claims_dict, ancestors)
+        return ancestors
+        
     def check_sensitive_words(self, text):
         """扫描全文明感词和残破词汇（例如‘大概’、‘最好是’、‘权利要’）"""
         issues = []
@@ -62,6 +80,16 @@ class RulesChecker:
             dep_match_general = self.pat_dep_general.search(text)
             if dep_match_general:
                 dep_str = dep_match_general.group(1).strip()
+                
+                if "和" in dep_str:
+                    msg = f"形式要求：权利要求 {num} 引用了多项权利要求，引用词应当使用“或”而不是“和”！"
+                    report.append(msg)
+                    issues.append({
+                        "text": msg, "type": "claims_error",
+                        "span": (data["start"] + dep_match_general.start(1), data["start"] + dep_match_general.end(1)),
+                        "target": "claims"
+                    })
+                    
                 nums_str = re.findall(r'\d+', dep_str)
                 deps = [int(n) for n in nums_str]
                 
@@ -104,12 +132,13 @@ class RulesChecker:
                 
         multi_claims = set()
         for num, data in claims_dict.items():
-            deps = data['deps']
-            
-            is_multi = len(deps) > 1
-            if is_multi:
+            if len(data['deps']) > 1:
                 multi_claims.add(num)
                 
+        for num, data in claims_dict.items():
+            deps = data['deps']
+            is_multi = len(deps) > 1
+            
             # 1. 多项从属权利要求作为另一项多项从属权利要求的基础 （多引多）
             if is_multi:
                 for d in deps:
@@ -132,17 +161,7 @@ class RulesChecker:
                     })
                     
             # 3. 闭环检查
-            def has_cycle(current, visited):
-                if current in visited:
-                    return True
-                visited.add(current)
-                if current in claims_dict:
-                    for parent in claims_dict[current]['deps']:
-                        if has_cycle(parent, visited.copy()):
-                            return True
-                return False
-                
-            if has_cycle(num, set()):
+            if self._has_cycle(num, claims_dict):
                  msg = f"死循环引用违规：权利要求 {num} 存在死循环引用关系！"
                  report.append(msg)
                  issues.append({
@@ -262,10 +281,21 @@ class RulesChecker:
                     "span": span, "target": target
                 })
                 
-        # 同名异号检查（警告）
+        # 同名异号检查（跨文与域内警告）
         for uname, nums in unified_name_to_nums.items():
             if len(nums) > 1:
-                msg = f"部件编号不一：部件核心【{uname}】关联了多种标号：{', '.join(nums)}！"
+                c_nums = set()
+                s_nums = set()
+                
+                for num in nums:
+                    pattern_str = r'[\u4e00-\u9fa5]*?' + re.escape(uname) + r'\s*[\(（]?\s*' + str(num) + r'[a-zA-Z]?[\)）]?'
+                    if re.search(pattern_str, claims_text): c_nums.add(num)
+                    if re.search(pattern_str, specs_text): s_nums.add(num)
+                
+                if c_nums and s_nums and not c_nums.intersection(s_nums):
+                    msg = f"编号跨文不一致：【{uname}】在权利要求中使用的标号为 {', '.join(c_nums)}，但在说明书中变为了 {', '.join(s_nums)}！请仔细核对！"
+                else:
+                    msg = f"部件编号不一：部件核心【{uname}】关联了多种标号：{', '.join(nums)}！"
                 
                 target = "claims"
                 span = (0, 0)
@@ -280,7 +310,7 @@ class RulesChecker:
                         
                 report.append(msg)
                 issues.append({
-                    "text": msg, "type": "claims_warning",
+                    "text": msg, "type": "claims_error" if (c_nums and s_nums and not c_nums.intersection(s_nums)) else "claims_warning",
                     "span": span, "target": target
                 })
 
@@ -306,15 +336,7 @@ class RulesChecker:
                 if word in ["发明", "权利要求", "特征", "方法", "系统", "装置", "步骤", "其", "其余", "其它", "其他", "上述"]: 
                     continue
                 
-                ancestors = set()
-                # 寻找所有的父权项
-                def get_ancestors(curr):
-                    if curr in claims_dict:
-                        for p in claims_dict[curr]['deps']:
-                            if p not in ancestors:
-                                ancestors.add(p)
-                                get_ancestors(p)
-                get_ancestors(num)
+                ancestors = self._get_ancestors(num, claims_dict)
                 
                 search_pool = ""
                 for a in sorted(list(ancestors)):
@@ -455,6 +477,27 @@ class RulesChecker:
                     span = (0, 0)
                     if match:
                         span = (desc_start + match.start(), desc_start + match.end())
+                        
+                    issues.append({
+                        "text": msg, "type": "claims_error",
+                        "span": span, "target": "specs"
+                    })
+                    
+            # 实施方式反向核对
+            figures_in_impl = set(re.findall(r'图\s*\d+[a-zA-Z]?', impl_text))
+            for fig in figures_in_impl:
+                norm_fig = fig.replace(" ", "")
+                num_part = re.search(r'\d+[a-zA-Z]?', fig).group()
+                pattern = r'图\s*' + num_part + r'(?![0-9a-zA-Z])'
+                
+                if not re.search(pattern, desc_text):
+                    msg = f"附图说明遗漏：具体实施方式中引用了【{norm_fig}】，但在附图说明段落中却未进行介绍！"
+                    report.append(msg)
+                    
+                    match = re.search(pattern, impl_text)
+                    span = (0, 0)
+                    if match:
+                        span = (impl_start + match.start(), impl_start + match.end())
                         
                     issues.append({
                         "text": msg, "type": "claims_error",

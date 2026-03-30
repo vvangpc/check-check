@@ -73,11 +73,10 @@ def split_patent_document(text):
         # 只找到了说明书
         specification = text[specs_start_idx:actual_specs_end].strip()
 
-    # 如果分割依然失败为空，退回整篇文本
-    if not claims: 
-        claims = text
-    if not specification:
-        specification = text
+    # 如果由于格式极端无法自动定位，退回空字符串以强制用户手动操作
+    if not claims and not specification:
+        claims = ""
+        specification = ""
         
     return {
         "claims": claims,
