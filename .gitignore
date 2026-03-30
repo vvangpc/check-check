@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+.gemini/
+.ipynb_checkpoints/
+*.exe
+*.dll
+*.rtf
+*.rtf
+*.docx
+*.txt
+!check-check-python/dicts/*.txt
+!README.md
