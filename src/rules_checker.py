@@ -222,10 +222,39 @@ class RulesChecker:
         name_to_nums = {}
         num_to_names = {}
         
-        exclude_words = ["权利要求", "项", "第", "步骤", "图", "为", "是", "说明书"]
+        # Bug fix 2: 排除不应被视为附图标记的上下文词（如"实施例1"、"附图1"）
+        exclude_words = ["权利要求", "项", "第", "步骤", "图", "为", "是", "说明书",
+                         "实施例", "附图", "如图", "参图", "见图"]
+        
+        # Bug fix 1: 提取部件名时去除前置的语境词（连词/介词/指示词），只保留真实的部件名核心
+        # 例: "下端通过弹簧平衡器" → "弹簧平衡器", "所述弹簧平衡器" → "弹簧平衡器"
+        def clean_name(raw_name):
+            """将捕获的冗长前缀上下文剥离，提取最短的真实部件名。"""
+            # 按长度从长到短尝试剥离，防止短前缀遮蔽长前缀
+            leading_context = [
+                '上的穿线孔后与', '的下端通过', '的上端通过', '另一端与所述',
+                '进而通过', '以通过', '并通过', '再通过', '经由',
+                '下端通过', '上端通过', '端通过', '一端通过', '两端通过',
+                '通过', '经过', '穿过', '作用在', '连接在', '固定在',
+                '安装在', '设置在', '而在', '并且与', '另一端与',
+                '作用在', '一端与', '两端与', '且与', '并与',
+                '中的', '上的', '下的', '端的',
+                '所述', '该', '此', '本',
+                '和', '与', '或', '而', '并', '在',
+            ]
+            name = raw_name
+            for prefix in sorted(leading_context, key=len, reverse=True):
+                if name.startswith(prefix) and len(name) > len(prefix):
+                    name = name[len(prefix):]
+                    break  # 只去一次前缀，然后递归处理剩余（防止反复剥离丢失信息）
+            # 递归处理：有时前缀剥完还剩指示词
+            if name != raw_name and len(name) >= 2:
+                name = clean_name(name)
+            return name.strip()
         
         for match in self.pat_ref_nums.finditer(claims_text):
-            name = match.group(1)
+            raw_name = match.group(1)
+            name = clean_name(raw_name)     # ← 清洗前置语境
             left_bracket = match.group(2)
             num = match.group(3)
             right_bracket = match.group(4)
@@ -245,7 +274,7 @@ class RulesChecker:
             num_to_names.setdefault(num, set()).add(name)
             
         for match in self.pat_ref_nums.finditer(specs_text):
-            name = match.group(1)
+            name = clean_name(match.group(1))   # ← 同样清洗说明书侧
             num = match.group(3)
             is_excluded = any(ex_word in name for ex_word in exclude_words)
             if is_excluded: continue
