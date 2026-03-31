@@ -12,5 +12,5 @@ __pycache__/
 *.rtf
 *.docx
 *.txt
-!check-check-python/dicts/*.txt
+!dicts/*.txt
 !README.md

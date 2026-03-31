@@ -26,6 +26,44 @@ class RulesChecker:
                     ancestors.add(p)
                     self._get_ancestors(p, claims_dict, ancestors)
         return ancestors
+
+    def check_typos(self, text, target_name):
+        """检查重复输入的多字或漏字错误 (AA, ABAB, ABCABC等)"""
+        issues = []
+        if not text: return issues
+        
+        valid_aa = {"各个", "往往", "仅仅", "种种", "渐渐", "常常", "一一", "微微", "稍稍", "慢慢", "纷纷", "明明", "隐隐", "区区", "丝丝", "频频", "恰恰", "孜孜", "源源", "处处", "人人", "天天", "年年", "岁岁", "时时", "事事", "步步", "条条", "行行", "多多", "久久", "早早", "层层", "阵阵", "端端", "太太", "刚刚", "些些", "声声", "大大", "小小", "高高", "低低", "长长", "短短", "纷纷"}
+        
+        # 匹配长度为1到15的连续重复。限定最大长度防止跨段落超长匹配引起的性能问题。
+        for match in re.finditer(r'([a-zA-Z0-9\u4e00-\u9fa5]{1,15})\1', text):
+            repeated_str = match.group(1)
+            full_str = match.group(0)
+            
+            # 过滤1: 纯英文或数字的连续（如 AABB, 1122, 1111），通常是产品型号或引用标号，予以放行
+            if not re.search(r'[\u4e00-\u9fa5]', full_str):
+                continue
+                
+            if len(repeated_str) == 1:
+                # 过滤2: 针对连续单字 (AA) 的合法叠词
+                if full_str in valid_aa:
+                    continue
+                issues.append({
+                    "type": "claims_warning",
+                    "word": full_str,
+                    "span": match.span(),
+                    "target": target_name,
+                    "text": f"字词冗余警告：检测到连续的相同字【{full_str}】，请复查是否存在多字漏字或书写错误！"
+                })
+            else:
+                # 针对多字连续重复 (ABAB, ABCABC等)
+                issues.append({
+                    "type": "claims_warning",
+                    "word": full_str,
+                    "span": match.span(),
+                    "target": target_name,
+                    "text": f"字词冗余警告：检测到短语被连续重复输入【{full_str}】(重复了'{repeated_str}')，请复查是否粘贴多余！"
+                })
+        return issues
         
     def check_sensitive_words(self, text):
         """扫描全文明感词和残破词汇（例如‘大概’、‘最好是’、‘权利要’）"""
@@ -374,6 +412,14 @@ class RulesChecker:
         report = []
         issues = []
         
+        # 0. 扫描错字 / 多字 / 冗余字
+        for text, tgt in [(claims_text, "claims"), (specs_text, "specs")]:
+            typo_issues = self.check_typos(text, tgt)
+            if typo_issues:
+                for issue in typo_issues:
+                    report.append(issue["text"])
+                    issues.append(issue)
+        
         # 1. 扫描权利要求中的敏感词/缺陷
         claims_issues = self.check_sensitive_words(claims_text)
         if claims_issues:
@@ -383,7 +429,8 @@ class RulesChecker:
                 issues.append({
                     "text": msg,
                     "type": "claims_error",
-                    "span": issue['position']
+                    "span": issue['position'],
+                    "target": "claims"
                 })
                 
         # 2. 增强检查

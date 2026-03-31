@@ -21,33 +21,67 @@ def parse_file(file_path):
         raise ValueError("不支持的文件格式，请上传 .docx, .rtf 或 .txt 文件")
     return text
 
-def split_patent_document(text):
+def flexible_match(pattern_str, text):
+    """将用户输入的包含 XXX 或 * 的锚点字符串转换为正则并匹配"""
+    if not pattern_str:
+        return None
+        
+    pattern_str = pattern_str.strip()
+    # 使用 X, x, * 作为通配符
+    parts = re.split(r'[Xx*]+', pattern_str)
+    escaped_parts = [re.escape(p) for p in parts]
+    regex_pattern = '.*?'.join(escaped_parts)
+    
+    # 容错处理：全半角空格一致化，处理 1. 与 1、 的混用
+    regex_pattern = regex_pattern.replace(r'\ ', r'\s*')
+    regex_pattern = regex_pattern.replace(r'1\.', r'1[.\u3001]\s*')
+    
+    return re.search(regex_pattern, text, flags=re.DOTALL)
+
+def split_patent_document(text, reqs=None):
     """
-    根据关键字和正则对整篇专利文档进行自动分割。
+    根据关键字和设定对整篇专利文档进行自动分割。
     返回: {'claims': 权利要求内容, 'specification': 说明书内容}
     """
+    if not reqs:
+        reqs = {
+            "claims_start": "1. 一种",
+            "specs_start": "技术领域",
+            "specs_end": "在上述发明的基础上还可以做出其它变化或变型，并且这些变化或变型仍处于本发明的范围内。"
+        }
+        
     claims = ""
     specification = ""
     
     text = text.replace('\r\n', '\n')
     
-    # 寻找权利要求书的开头：匹配“1.一种XXX，其特征”或“1、一种XXX，其特征”等描述
-    claims_start_match = re.search(r'(?:^|\n)\s*1[.\u3001]\s*一种.*?其特征', text, flags=re.DOTALL)
+    claims_start_str = reqs.get("claims_start", "")
+    specs_start_str = reqs.get("specs_start", "")
+    specs_end_str = reqs.get("specs_end", "")
     
-    # 寻找说明书的开头：匹配“技术领域”
-    specs_start_match = re.search(r'(?:^|\n)\s*技术领域', text)
+    c_match = flexible_match(claims_start_str, text)
+    s_match = flexible_match(specs_start_str, text)
+    e_match = flexible_match(specs_end_str, text)
     
-    # 说明书结尾标语
-    specs_end_str = "在上述发明的基础上还可以做出其它变化或变型，并且这些变化或变型仍处于本发明的范围内。"
-    specs_end_idx = text.find(specs_end_str)
+    claims_start_idx = c_match.start() if c_match else -1
+    specs_start_idx = s_match.start() if s_match else -1
+    
+    if e_match:
+        specs_end_idx = e_match.start()
+        actual_specs_end = e_match.end()
+    else:
+        specs_end_idx = -1
+        actual_specs_end = len(text)
 
-    claims_start_idx = claims_start_match.start() if claims_start_match else -1
-    specs_start_idx = specs_start_match.start() if specs_start_match else -1
+    # 如果说明书开头找到了，向上回溯寻找真正的说明书起点（专利标题），即上一个非空段落
 
-    # 尝试将截断点规范化（比如说明书开头往前找“一种”作为标题）
     if specs_start_idx != -1:
-        title_idx = text.rfind("一种", 0, specs_start_idx)
-        if title_idx != -1 and (specs_start_idx - title_idx) < 100:  # 确保标题没找的太远
+        prefix_text = text[:specs_start_idx].rstrip()
+        last_newline_idx = prefix_text.rfind('\n')
+        title_idx = last_newline_idx + 1 if last_newline_idx != -1 else 0
+        
+        # 确保标题没找得太远（例如不超过200字符），否则可能定位到了过于无关的内容
+        if specs_start_idx - title_idx < 200:
             specs_start_idx = title_idx
 
     actual_specs_end = specs_end_idx + len(specs_end_str) if specs_end_idx != -1 else len(text)
@@ -67,7 +101,7 @@ def split_patent_document(text):
             claims = text[claims_start_idx:].strip()
             
     elif claims_start_idx != -1:
-        # 只找到了权利要求，默认后半部分全是权利要求
+        # 只找到了权利要求
         claims = text[claims_start_idx:].strip()
     elif specs_start_idx != -1:
         # 只找到了说明书

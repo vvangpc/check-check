@@ -11,23 +11,64 @@ from PyQt6.QtGui import QTextCharFormat, QColor, QBrush, QTextCursor, QAction, Q
 
 # 加载业务模块
 from src.document_parser import parse_file, split_patent_document
+from src.document_parser import parse_file, split_patent_document
 from src.rules_checker import checker
 from src.config import config
+import src.config as conf_module
 
 class RequireDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
         self.setWindowTitle("设置 - 文本要求")
         self.resize(500, 300)
         layout = QVBoxLayout(self)
-        te = QTextEdit()
-        te.setReadOnly(True)
-        te.setText("上传文本要求与智能分割提示：\n\n1. 权利要求书的开头需满足以下任一定式：\n【1.一种XXX】或【1、一种XXX】（并随后带有“其特征”等字样）\n\n2. 说明书须带有以下字样作为分割点识别起点：\n【一种XXXXX 技术领域】\n\n3. 说明书结尾必须以以下规定的一句话作为结尾：\n在上述发明的基础上还可以做出其它变化或变型，并且这些变化或变型仍处于本发明的范围内。")
-        layout.addWidget(te)
         
-        btn = QPushButton("确定")
-        btn.clicked.connect(self.accept)
+        info = QLabel("请设定以下锚点文本，它们将被用于自动分割和审查逻辑。\n如果不设定，自动分割将无法正常工作。")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        # Claims start
+        layout.addWidget(QLabel("权利要求书的开头 (例如: 1. 一种XXX，其特征)："))
+        self.edit_claims_start = QLineEdit()
+        layout.addWidget(self.edit_claims_start)
+        
+        # Specs start
+        layout.addWidget(QLabel("说明书的开头 (例如: 技术领域)："))
+        self.edit_specs_start = QLineEdit()
+        layout.addWidget(self.edit_specs_start)
+        
+        # Specs end
+        layout.addWidget(QLabel("说明书的结尾 (例如: 仍处于本发明的范围内)："))
+        self.edit_specs_end = QLineEdit()
+        layout.addWidget(self.edit_specs_end)
+        
+        # Load existing
+        current = self.main_window.text_requirements
+        self.edit_claims_start.setText(current.get("claims_start", ""))
+        self.edit_specs_start.setText(current.get("specs_start", ""))
+        self.edit_specs_end.setText(current.get("specs_end", ""))
+        
+        btn = QPushButton("保存")
+        btn.clicked.connect(self.save_and_accept)
         layout.addWidget(btn)
+
+    def save_and_accept(self):
+        c_start = self.edit_claims_start.text().strip()
+        s_start = self.edit_specs_start.text().strip()
+        s_end = self.edit_specs_end.text().strip()
+        
+        if not c_start or not s_start or not s_end:
+            QMessageBox.warning(self, "警告", "所有输入框均不能为空，请填写完整！")
+            return
+            
+        self.main_window.text_requirements["claims_start"] = c_start
+        self.main_window.text_requirements["specs_start"] = s_start
+        self.main_window.text_requirements["specs_end"] = s_end
+        
+        self.main_window.save_settings()
+        self.accept()
+
 
 class ThemeDialog(QDialog):
     def __init__(self, parent=None):
@@ -69,10 +110,143 @@ class ThemeDialog(QDialog):
                 self.main_window.current_theme["report"] = hex_color
                 
             try:
-                with open(self.main_window.settings_file, "w", encoding="utf-8") as f:
-                    json.dump(self.main_window.current_theme, f, ensure_ascii=False, indent=4)
+                self.main_window.save_settings()
             except Exception:
                 pass
+
+
+class DictEditDialog(QDialog):
+    def __init__(self, dict_name, dict_path_var_name, description, format_req, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.dict_name = dict_name
+        self.dict_path_var_name = dict_path_var_name
+        self.setWindowTitle(f"编辑字典 - {dict_name}")
+        self.resize(800, 600)
+        
+        layout = QVBoxLayout(self)
+        
+        # 说明区域
+        info_label = QLabel(f"<b>{dict_name}</b><br><br>{description}<br><br><b>格式要求：</b><br>{format_req}")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
+        layout.addWidget(info_label)
+        
+        # 文本编辑区
+        self.text_edit = QTextEdit()
+        font = self.text_edit.font()
+        font.setPointSize(11)
+        self.text_edit.setFont(font)
+        
+        # 加载内容
+        current_path = getattr(conf_module, self.dict_path_var_name, None)
+        if current_path and os.path.exists(current_path):
+            try:
+                with open(current_path, "r", encoding="utf-8-sig") as f:
+                    self.text_edit.setPlainText(f.read())
+            except Exception as e:
+                self.text_edit.setPlainText(f"读取异常: {e}")
+                
+        layout.addWidget(self.text_edit)
+        
+        # 按钮
+        btn_layout = QHBoxLayout()
+        btn_save = QPushButton("保存并应用")
+        btn_save.clicked.connect(self.save_dict)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_cancel)
+        btn_layout.addWidget(btn_save)
+        layout.addLayout(btn_layout)
+        
+    def save_dict(self):
+        # 防护：确保字典已经在外部准备好
+        conf_module.ensure_external_dicts()
+        # 路径可能在 ensures() 执行后变为外部路径，重新获取
+        current_path = getattr(conf_module, self.dict_path_var_name)
+        
+        content = self.text_edit.toPlainText()
+        try:
+            with open(current_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            # 通知配置中心重载所有的正则和内存字典
+            config.load_rules()
+            QMessageBox.information(self, "成功", f"【{self.dict_name}】 已成功保存并立即生效！")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"发生了意外错误：{str(e)}")
+
+
+class DictGuideDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("设置 - 字典使用指南 (0基础友好)")
+        self.resize(850, 600)
+        layout = QVBoxLayout(self)
+        
+        text = QTextEdit()
+        text.setReadOnly(True)
+        html_content = """
+        <h2 style='color: #2c3e50; text-align: center;'>📖 专利审查字典 零基础补全指南</h2>
+        <p>本系统内置了 8 个“大脑”字典，它们让电脑学会如何像审查员一样阅读。如果您想增加规则，请参考下表：</p>
+        
+        <table border="1" style="border-collapse: collapse; width: 100%; font-family: Microsoft YaHei; font-size: 14px;">
+            <tr style="background-color: #34495e; color: white;">
+                <th style='padding: 10px; width: 150px;'>字典类别</th>
+                <th style='padding: 10px;'>通俗解释 (它是做什么的)</th>
+                <th style='padding: 10px;'>补全格式 (你应该怎么写)</th>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>自定义分词</b><br>(userdict.txt)</td>
+                <td style='padding: 10px;'><b>【大脑扩词卡】</b><br>专利中有很多专业术语（如“光刻模组”），电脑有时会把它拆散。在这里写下这些词，就是告诉电脑：这是一个完整的词。</td>
+                <td style='padding: 10px;'>每行写一个词，空格后跟 3 n。<br>例：<code>光刻机 3 n</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>冗余词拦截</b><br>(useless_word.txt)</td>
+                <td style='padding: 10px;'><b>【废话过滤器】</b><br>揪出“基本上”、“大概”等不严谨的口语词汇。让您的专利更具法律严肃性。</td>
+                <td style='padding: 10px;'>每行写一行规则或词语。<br>例：<code>大概</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>法律红线词</b><br>(minganci.txt)</td>
+                <td style='padding: 10px;'><b>【法律红线检测】</b><br>盯着“绝对”、“唯一”、“最好是”等极致词，防止权利要求范围被锁得太死或产生瑕疵。</td>
+                <td style='padding: 10px;'>直接每行写下一个要禁用的词。<br>例：<code>极端高效</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>特征装配关联</b><br>(gudingdapei.txt)</td>
+                <td style='padding: 10px;'><b>【关系捕捉器】</b><br>识别零件是怎么连接的（如“A固定在B上”）。电脑会核对：权利要求的连接逻辑在说明书里是否一致。</td>
+                <td style='padding: 10px;'>用 <code>***</code> 代表零件。<br>例：<code>***垂直于***设置</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>方位空间逻辑</b><br>(weizhiguanxi.txt)</td>
+                <td style='padding: 8px;'><b>【方位侦察兵】</b><br>专门提取“上面”、“内部”、“左侧”等方位词，辅助理顺机械零件之间的相对空间结构。</td>
+                <td style='padding: 10px;'>同上，使用 <code>***</code> 锚定。<br>例：<code>***设在***的内部</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>别称映射表</b><br>(synonyms.txt)</td>
+                <td style='padding: 10px;'><b>【别名对照表】</b><br>您一会儿叫它“螺钉”，一会儿叫它“紧固件”，电脑会犯晕。在这里告诉电脑它们其实是同一样东西。</td>
+                <td style='padding: 10px;'>同行用英文逗号分隔。<br>例：<code>螺钉,螺栓,紧固件</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>步骤逻辑词</b><br>(transition_words.txt)</td>
+                <td style='padding: 10px;'><b>【流程润滑剂】</b><br>识别“首先”、“接着”等步骤词，让电脑理清楚专利动作的执行顺序。</td>
+                <td style='padding: 10px;'>每行写一个连接词。<br>例：<code>随后</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>部件编号档案</b><br>(reference_signs.txt)</td>
+                <td style='padding: 10px;'><b>【编号身份证】</b><br>记录“齿轮 10”等编号信息，这是检查“同名异号”或“异名同号”低级错误的关键。</td>
+                <td style='padding: 10px;'>直接写入规则即可。</td>
+            </tr>
+        </table>
+        <p style='color: #e67e22; font-weight: bold;'>温馨提示：您可以在“配置字典模型”中实时保存修改。修改后无需重启程序，审查引擎将立即更新！</p>
+        """
+        text.setHtml(html_content)
+        layout.addWidget(text)
+        
+        btn = QPushButton("明白，我会补全了")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
 
 class PatentHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -128,17 +302,33 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.last_focused_box = None
         
-        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        if getattr(sys, 'frozen', False):
+            self.root_dir = os.path.dirname(sys.executable)
+        else:
+            self.root_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        self.settings_file = os.path.join(self.root_dir, "settings.json")
         self.current_theme = {
             "claims": "#ffffff",
             "specs": "#ffffff",
             "report": "#ffffff"
         }
+        self.text_requirements = {
+            "claims_start": "",
+            "specs_start": "",
+            "specs_end": ""
+        }
         if os.path.exists(self.settings_file):
             try:
                 with open(self.settings_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
-                    self.current_theme.update(saved)
+                    
+                    if "theme" in saved:
+                        self.current_theme.update(saved["theme"])
+                        self.text_requirements.update(saved.get("text_requirements", {}))
+                    else:
+                        # Legacy struct
+                        self.current_theme.update(saved)
             except Exception:
                 pass
 
@@ -181,6 +371,29 @@ class MainWindow(QMainWindow):
         action_theme = QAction("主题颜色", self)
         action_theme.triggered.connect(self.show_theme_settings)
         
+        # --- 字典编辑子菜单 ---
+        dicts_menu = settings_menu.addMenu("配置字典模型")
+        
+        # 增加说明入口
+        action_dict_guide = QAction("📝 字典使用说明与规范", self)
+        action_dict_guide.triggered.connect(self.show_dict_guide)
+        dicts_menu.addAction(action_dict_guide)
+        dicts_menu.addSeparator()
+        
+        dict_configs = [
+            ("自定义分词库 (userdict)", "DICT_USER_PATH", "防止专有名词被错切分（例如“光刻机”被切成“光”、“刻机”）。", "每行一个词，后接词频和词类，空格分隔。例如：<br><code>光刻机 3 n<br>PCB板 3 n</code>"),
+            ("冗余词拦截库 (useless_word)", "DICT_USELESS_PATH", "匹配并拦截由于口语化产生的不规范无意义词汇（如“大致”、“相关”）。", r"每行一条规则，支持基本正则表达式。例如：<br><code>大致<br>相关[\*\b]</code>"),
+            ("敏感与防错库 (minganci)", "DICT_MINGANCI_PATH", "屏蔽极度主观的词汇或形缺严重错误语（如“绝对”、“完美”）。", "每行一条规则，支持基本正则表达式。例如：<br><code>绝对<br>完美</code>"),
+            ("特征装配关联库 (gudingdapei)", "DICT_GUDINGDAPEI_PATH", "用于提取两个技术部件之间的安装配合、固定和拓扑连接关系。", "务必使用 <code>***</code> 代表前后的机械/虚拟核心部件名。例如：<br><code>***套设在***上方<br>与***螺纹连接</code>"),
+            ("位置特征拦截库 (weizhiguanxi)", "DICT_WEIZHI_PATH", "独立抽取表示方位的介词结构，辅助识别空间关联。", "类似于上述特征搭配，也必须使用 <code>***</code> 锚定对象。例如：<br><code>***位于***上方</code>"),
+            ("同义词对照库 (synonyms)", "DICT_SYNONYMS_PATH", "审查权利要求特征在说明书中寻找“对应支撑”时的主动同义词扩散。", "必须在同一行使用英文逗号分隔所有同义别称。例如：<br><code>螺钉,螺栓,紧固件<br>壳体,外壳,机壳</code>")
+        ]
+        
+        for name, var_name, desc, req in dict_configs:
+            action = QAction(name, self)
+            action.triggered.connect(lambda checked=False, n=name, v=var_name, d=desc, r=req: self.open_dict_editor(n, v, d, r))
+            dicts_menu.addAction(action)
+            
         settings_menu.addAction(action_req)
         settings_menu.addAction(action_theme)
         self.btn_settings.setMenu(settings_menu)
@@ -290,9 +503,37 @@ class MainWindow(QMainWindow):
             style += "font-family: Consolas, monospace; font-size: 14px;"
             widget.setStyleSheet(f"QTextEdit {{ {style} }}")
 
-    def show_text_requirements(self):
-        diag = RequireDialog(self)
+    def open_dict_editor(self, name, var_name, desc, req):
+        dialog = DictEditDialog(name, var_name, desc, req, self, self)
+        dialog.exec()
+
+    def show_dict_guide(self):
+        diag = DictGuideDialog(self)
         diag.exec()
+
+    def show_text_requirements(self):
+        diag = RequireDialog(self, parent=self)
+        diag.exec()
+        
+    def save_settings(self):
+        saved = {
+            "theme": self.current_theme,
+            "text_requirements": self.text_requirements
+        }
+        try:
+            with open(self.settings_file, "w", encoding="utf-8") as f:
+                json.dump(saved, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
+
+    def check_requirements_filled(self):
+        reqs = self.text_requirements
+        if not reqs.get("claims_start") or not reqs.get("specs_start") or not reqs.get("specs_end"):
+            QMessageBox.information(self, "提示", "请先完善『文本要求』设置中的分割锚点，再进行各项操作！")
+            diag = RequireDialog(self, parent=self)
+            if diag.exec() != QDialog.DialogCode.Accepted:
+                return False
+        return True
         
     def show_theme_settings(self):
         diag = ThemeDialog(self)
@@ -326,6 +567,9 @@ class MainWindow(QMainWindow):
         self.lbl_stats.setText(f"字数统计: 权利要求及说明书共 {c_len + s_len} 字 | 权利要求项数: {c_items} 项起")
 
     def upload_file(self):
+        if not self.check_requirements_filled():
+            return
+            
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择专利申请文件",
@@ -339,7 +583,7 @@ class MainWindow(QMainWindow):
             self.list_report.clear()
             self.list_report.addItem(f"> 成功读取文件: {file_path}")
             full_text = parse_file(file_path)
-            result = split_patent_document(full_text)
+            result = split_patent_document(full_text, self.text_requirements)
             
             if not result["claims"] and not result["specification"]:
                 QMessageBox.warning(self, "分割失败", "自动分割失败：无法准确定位【权利要求】与【技术领域】锚点。请您手动复制原文至对应文本框内！")
@@ -357,6 +601,9 @@ class MainWindow(QMainWindow):
             self.list_report.addItem(f"❌ 读取错误: {str(e)}")
 
     def run_checks(self):
+        if not self.check_requirements_filled():
+            return
+            
         self.claims_text = self.txt_claims.toPlainText()
         self.specs_text = self.txt_specs.toPlainText()
         

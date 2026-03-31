@@ -1,5 +1,12 @@
 {
-    "claims": "#ffffff",
-    "specs": "#ffffff",
-    "report": "#ffffff"
+    "theme": {
+        "claims": "#ffffff",
+        "specs": "#ffffff",
+        "report": "#ffffff"
+    },
+    "text_requirements": {
+        "claims_start": "1.一种XXXX，其特征在于，",
+        "specs_start": "技术领域",
+        "specs_end": "并且这些变化或变型仍处于本发明的范围内。"
+    }
 }
