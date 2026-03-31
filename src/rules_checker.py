@@ -6,8 +6,14 @@ class RulesChecker:
         self.pat_claims_split = re.compile(r'^(\d+)[\.、]\s*(.*)', re.MULTILINE)
         self.pat_dep_general = re.compile(r'根据权利要求([\d~、和及到了或\-\s至]+)(?:中任一项)?所述')
         self.pat_dep_title = re.compile(r'根据权利要求[\d~、和及到了或\-\s至]+(?:中任一项)?所述的?\s*([^，,。]+)')
-        self.pat_ref_nums = re.compile(r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)\s*([\)）]?)')
+        # 附图标记正则：匹配"部件名 + 数字"，但排除数字后紧跟单位的情况
+        # 排除：度、°、%、‰、mm、cm、m、kg、g、Hz、rpm 等物理量单位，避免误匹配"旋转90度"
+        self.pat_ref_nums = re.compile(
+            r'([\u4e00-\u9fa5]{2,})\s*([\(（]?)\s*(\d+[a-zA-Z]?)(?!\d|[a-zA-Z])\s*([\)）]?)'
+            r'(?![\s]*[度°℃℉%‰ⅢⅣⅤmmcmkgmsMHzrpmμnpσ个条项步次轮圈周倍节段级层组道])'
+        )
         self.pat_antecedent = re.compile(r'(所述|该)([\u4e00-\u9fa5]{2,10})')
+
         
     def _has_cycle(self, num, claims_dict, visited=None):
         if visited is None: visited = set()

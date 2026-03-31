@@ -228,7 +228,7 @@ class DictGuideDialog(QDialog):
             <tr>
                 <td style='padding: 10px; background-color: #ecf0f1;'><b>自定义分词</b><br>(userdict.txt)</td>
                 <td style='padding: 10px;'><b>【大脑扩词卡】</b><br>专利中有很多专业术语（如“光刻模组”），电脑有时会把它拆散。在这里写下这些词，就是告诉电脑：这是一个完整的词。</td>
-                <td style='padding: 10px;'>每行写一个词，空格后跟 3 n。<br>例：<code>光刻机 3 n</code></td>
+                <td style='padding: 10px;'>每行写一个词即可，直接写词语本身。<br>例：<code>光刻机</code></td>
             </tr>
             <tr>
                 <td style='padding: 10px; background-color: #ecf0f1;'><b>冗余词拦截</b><br>(useless_word.txt)</td>
@@ -408,7 +408,7 @@ class MainWindow(QMainWindow):
         dicts_menu.addSeparator()
         
         dict_configs = [
-            ("自定义分词库 (userdict)", "DICT_USER_PATH", "防止专有名词被错切分（例如“光刻机”被切成“光”、“刻机”）。", "每行一个词，后接词频和词类，空格分隔。例如：<br><code>光刻机 3 n<br>PCB板 3 n</code>"),
+            ("自定义分词库 (userdict)", "DICT_USER_PATH", "防止专有名词被错切分（例如“光刻机”被切成“光”、“刻机”）。", "每行直接写一个词即可，无需任何后缀。例如：<br><code>光刻机<br>PCB板</code>"),
             ("冗余词拦截库 (useless_word)", "DICT_USELESS_PATH", "匹配并拦截由于口语化产生的不规范无意义词汇（如“大致”、“相关”）。", r"每行一条规则，支持基本正则表达式。例如：<br><code>大致<br>相关[\*\b]</code>"),
             ("敏感与防错库 (minganci)", "DICT_MINGANCI_PATH", "屏蔽极度主观的词汇或形缺严重错误语（如“绝对”、“完美”）。", "每行一条规则，支持基本正则表达式。例如：<br><code>绝对<br>完美</code>"),
             ("特征装配关联库 (gudingdapei)", "DICT_GUDINGDAPEI_PATH", "用于提取两个技术部件之间的安装配合、固定和拓扑连接关系。", "务必使用 <code>***</code> 代表前后的机械/虚拟核心部件名。例如：<br><code>***套设在***上方<br>与***螺纹连接</code>"),
