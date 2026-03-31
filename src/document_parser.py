@@ -38,6 +38,28 @@ def flexible_match(pattern_str, text):
     
     return re.search(regex_pattern, text, flags=re.DOTALL)
 
+
+def flexible_match_heading(pattern_str, text):
+    """
+    专门用于匹配独立标题行（如"技术领域"）的变体。
+    要求该关键词独占一行，防止摘要段落中嵌入的同名词语被误识别为说明书起点。
+    """
+    if not pattern_str:
+        return None
+
+    pattern_str = pattern_str.strip()
+    parts = re.split(r'[Xx*]+', pattern_str)
+    escaped_parts = [re.escape(p) for p in parts]
+    core_pattern = '.*?'.join(escaped_parts)
+    core_pattern = core_pattern.replace(r'\\ ', r'\\s*')
+    core_pattern = core_pattern.replace(r'1\\.', r'1[.\\u3001]\\s*')
+
+    # 关键升级：要求该关键词独占一整行（行首 + 关键词 + 行尾）
+    # 这样摘要段落内部包含的"技术领域"就不会被误匹配
+    heading_pattern = r'(?:^|\n)[ \t]*' + core_pattern + r'[ \t]*(?:\n|$)'
+    return re.search(heading_pattern, text, flags=re.MULTILINE)
+
+
 def split_patent_document(text, reqs=None):
     """
     根据关键字和设定对整篇专利文档进行自动分割。
@@ -60,11 +82,21 @@ def split_patent_document(text, reqs=None):
     specs_end_str = reqs.get("specs_end", "")
     
     c_match = flexible_match(claims_start_str, text)
-    s_match = flexible_match(specs_start_str, text)
+    # 说明书开头必须是独立标题行，防止摘要中嵌入的相同词被误匹配
+    s_match = flexible_match_heading(specs_start_str, text)
     e_match = flexible_match(specs_end_str, text)
     
     claims_start_idx = c_match.start() if c_match else -1
-    specs_start_idx = s_match.start() if s_match else -1
+    # heading 匹配时，match.start() 可能包含前置换行符，需跳过非标题字符
+    if s_match:
+        # 找到匹配行内的关键词真实起始位置（跳过行首空白）
+        specs_start_idx = s_match.start()
+        # 如果匹配开头是换行符，往前移一位让起点指向内容行
+        matched_text = text[specs_start_idx:]
+        leading_newline = len(matched_text) - len(matched_text.lstrip('\n'))
+        specs_start_idx += leading_newline
+    else:
+        specs_start_idx = -1
     
     if e_match:
         specs_end_idx = e_match.start()

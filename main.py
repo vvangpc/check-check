@@ -21,26 +21,53 @@ class RequireDialog(QDialog):
         super().__init__(parent)
         self.main_window = main_window
         self.setWindowTitle("设置 - 文本要求")
-        self.resize(500, 300)
+        self.resize(550, 480)
         layout = QVBoxLayout(self)
         
         info = QLabel("请设定以下锚点文本，它们将被用于自动分割和审查逻辑。\n如果不设定，自动分割将无法正常工作。")
         info.setWordWrap(True)
         layout.addWidget(info)
         
+        # --- 增加填写示例区块 ---
+        example_label = QLabel()
+        example_label.setTextFormat(Qt.TextFormat.RichText)
+        example_label.setText("""
+        <div style='background-color: #f8f9fa; border: 1px solid #ced4da; padding: 10px; border-radius: 4px; margin-bottom: 5px;'>
+            <p style='margin-top: 0; color: #2c3e50;'><b>💡 填写示例参考：</b></p>
+            <table style='width: 100%; border-collapse: collapse;'>
+                <tr>
+                    <td style='width: 120px;'><b>权利要求开头：</b></td>
+                    <td style='color: #d35400;'>1.一种XXXX，其特征在于，</td>
+                </tr>
+                <tr>
+                    <td><b>说明书的开头：</b></td>
+                    <td style='color: #d35400;'>技术领域</td>
+                </tr>
+                <tr>
+                    <td><b>说明书的结尾：</b></td>
+                    <td style='color: #d35400;'>并且这些变化或变型仍处于本发明的范围内。</td>
+                </tr>
+            </table>
+        </div>
+        """)
+        layout.addWidget(example_label)
+        
         # Claims start
-        layout.addWidget(QLabel("权利要求书的开头 (例如: 1. 一种XXX，其特征)："))
+        layout.addWidget(QLabel("权利要求书的开头 (例如: 1.一种XXXX，其特征在于，)："))
         self.edit_claims_start = QLineEdit()
+        self.edit_claims_start.setPlaceholderText("示例: 1.一种XXXX，其特征在于，")
         layout.addWidget(self.edit_claims_start)
         
         # Specs start
         layout.addWidget(QLabel("说明书的开头 (例如: 技术领域)："))
         self.edit_specs_start = QLineEdit()
+        self.edit_specs_start.setPlaceholderText("示例: 技术领域")
         layout.addWidget(self.edit_specs_start)
         
         # Specs end
-        layout.addWidget(QLabel("说明书的结尾 (例如: 仍处于本发明的范围内)："))
+        layout.addWidget(QLabel("说明书的结尾 (例如: 并且这些变化或变型仍处于本发明的范围内)："))
         self.edit_specs_end = QLineEdit()
+        self.edit_specs_end.setPlaceholderText("示例: 并且这些变化或变型仍处于本发明的范围内。")
         layout.addWidget(self.edit_specs_end)
         
         # Load existing
