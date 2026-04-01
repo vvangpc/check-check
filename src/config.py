@@ -31,13 +31,14 @@ else:
 DICT_USER_PATH = os.path.join(DICT_DIR, "userdict.txt")
 DICT_USELESS_PATH = os.path.join(DICT_DIR, "useless_word.txt")
 DICT_MINGANCI_PATH = os.path.join(DICT_DIR, "minganci.txt")
+DICT_MINGANCI_EXCLUDE_PATH = os.path.join(DICT_DIR, "minganci_exclude.txt")
 DICT_GUDINGDAPEI_PATH = os.path.join(DICT_DIR, "gudingdapei.txt")
 DICT_WEIZHI_PATH = os.path.join(DICT_DIR, "weizhiguanxi.txt")
 DICT_SYNONYMS_PATH = os.path.join(DICT_DIR, "synonyms.txt")
 
 def ensure_external_dicts():
     """保证存在外部 dicts 文件夹，如果是在打包环境且不存在，则从内部解压过去"""
-    global DICT_DIR, DICT_USER_PATH, DICT_USELESS_PATH, DICT_MINGANCI_PATH, DICT_GUDINGDAPEI_PATH, DICT_WEIZHI_PATH, DICT_SYNONYMS_PATH
+    global DICT_DIR, DICT_USER_PATH, DICT_USELESS_PATH, DICT_MINGANCI_PATH, DICT_MINGANCI_EXCLUDE_PATH, DICT_GUDINGDAPEI_PATH, DICT_WEIZHI_PATH, DICT_SYNONYMS_PATH
     
     if os.path.isdir(EXTERNAL_DICT_DIR):
         return True
@@ -51,6 +52,7 @@ def ensure_external_dicts():
             DICT_USER_PATH = os.path.join(DICT_DIR, "userdict.txt")
             DICT_USELESS_PATH = os.path.join(DICT_DIR, "useless_word.txt")
             DICT_MINGANCI_PATH = os.path.join(DICT_DIR, "minganci.txt")
+            DICT_MINGANCI_EXCLUDE_PATH = os.path.join(DICT_DIR, "minganci_exclude.txt")
             DICT_GUDINGDAPEI_PATH = os.path.join(DICT_DIR, "gudingdapei.txt")
             DICT_WEIZHI_PATH = os.path.join(DICT_DIR, "weizhiguanxi.txt")
             DICT_SYNONYMS_PATH = os.path.join(DICT_DIR, "synonyms.txt")
@@ -67,6 +69,7 @@ class ConfigLoader:
     def __init__(self):
         self.useless_words_regex = None
         self.minganci_regex = None
+        self.minganci_exclude_regex = None
         self.gudingdapei_regex = None
         self.weizhi_regex = None
         self.synonyms_dict = {}
@@ -92,10 +95,25 @@ class ConfigLoader:
                     return None
         return None
 
+    def _read_exclude_words_regex(self, file_path):
+        if not os.path.exists(file_path):
+            return None
+        try:
+            with open(file_path, "r", encoding="utf-8-sig") as f:
+                lines = [line.strip() for line in f if line.strip()]
+                if not lines:
+                    return None
+                pattern = "|".join(re.escape(w) for w in lines)
+                return re.compile(pattern)
+        except Exception as e:
+            print(f"Error compiling exclude regex in {file_path}: {e}")
+            return None
+
     def load_rules(self):
         print("正在加载和预编译规则字典...")
         self.useless_words_regex = self._read_and_compile(DICT_USELESS_PATH)
         self.minganci_regex = self._read_and_compile(DICT_MINGANCI_PATH)
+        self.minganci_exclude_regex = self._read_exclude_words_regex(DICT_MINGANCI_EXCLUDE_PATH)
         
         # for these, we convert *** to capturing groups
         self.gudingdapei_regex = self._read_and_compile(DICT_GUDINGDAPEI_PATH, replace_stars=True)

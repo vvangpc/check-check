@@ -75,7 +75,21 @@ class RulesChecker:
         """扫描全文明感词和残破词汇（例如‘大概’、‘最好是’、‘权利要’）"""
         issues = []
         if config.minganci_regex and text:
+            exclude_spans = []
+            if config.minganci_exclude_regex:
+                for ematch in config.minganci_exclude_regex.finditer(text):
+                    exclude_spans.append(ematch.span())
+
             for match in config.minganci_regex.finditer(text):
+                m_start, m_end = match.span()
+                is_excluded = False
+                for ex_start, ex_end in exclude_spans:
+                    if ex_start <= m_start and m_end <= ex_end:
+                        is_excluded = True
+                        break
+                if is_excluded:
+                    continue
+
                 issues.append({
                     "type": "形式异常/敏感词",
                     "word": match.group(),
