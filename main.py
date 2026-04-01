@@ -200,6 +200,8 @@ class DictEditDialog(QDialog):
                 f.write(content)
             # 通知配置中心重载所有的正则和内存字典
             config.load_rules()
+            # UI重载高亮器
+            self.main_window.reload_highlighters()
             QMessageBox.information(self, "成功", f"【{self.dict_name}】 已成功保存并立即生效！")
             self.accept()
         except Exception as e:
@@ -236,9 +238,14 @@ class DictGuideDialog(QDialog):
                 <td style='padding: 10px;'>每行写一行规则或词语。<br>例：<code>大概</code></td>
             </tr>
             <tr>
-                <td style='padding: 10px; background-color: #ecf0f1;'><b>法律红线词</b><br>(minganci.txt)</td>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>敏感与防错库</b><br>(minganci.txt)</td>
                 <td style='padding: 10px;'><b>【法律红线检测】</b><br>盯着“绝对”、“唯一”、“最好是”等极致词，防止权利要求范围被锁得太死或产生瑕疵。</td>
                 <td style='padding: 10px;'>直接每行写下一个要禁用的词。<br>例：<code>极端高效</code></td>
+            </tr>
+            <tr>
+                <td style='padding: 10px; background-color: #ecf0f1;'><b>敏感词排除库</b><br>(minganci_exclude.txt)</td>
+                <td style='padding: 10px;'><b>【红线特赦令】</b><br>对于一些特殊情况下的合理用词，即使包含了敏感字也能安全放行（如“最大”、“等级”）。</td>
+                <td style='padding: 10px;'>每行直接写入要放行的完整词汇。<br>例：<code>等级</code></td>
             </tr>
             <tr>
                 <td style='padding: 10px; background-color: #ecf0f1;'><b>特征装配关联</b><br>(gudingdapei.txt)</td>
@@ -279,6 +286,7 @@ class PatentHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.highlightingRules = [] 
+        self.exclude_regexes = []
         
     def set_rules(self, regexes, background_color):
         """传递一系列重编译的正则列表进实时高亮器"""
@@ -294,13 +302,36 @@ class PatentHighlighter(QSyntaxHighlighter):
         
         self.rehighlight()
 
+    def set_exclude_rules(self, exclude_regexes):
+        self.exclude_regexes.clear()
+        for qregex in exclude_regexes:
+            self.exclude_regexes.append(qregex)
+        self.rehighlight()
+
     def highlightBlock(self, text):
+        exclude_spans = []
+        for ex_regex in self.exclude_regexes:
+            iterator = ex_regex.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                if match.capturedLength() > 0:
+                    exclude_spans.append((match.capturedStart(), match.capturedEnd()))
+
         for regex, format in self.highlightingRules:
             iterator = regex.globalMatch(text)
             while iterator.hasNext():
                 match = iterator.next()
                 if match.capturedLength() > 0:
-                    self.setFormat(match.capturedStart(), match.capturedLength(), format)
+                    m_start = match.capturedStart()
+                    m_end = match.capturedEnd()
+                    
+                    is_excluded = False
+                    for ex_start, ex_end in exclude_spans:
+                        if ex_start <= m_start and m_end <= ex_end:
+                            is_excluded = True
+                            break
+                    if not is_excluded:
+                        self.setFormat(m_start, match.capturedLength(), format)
 
 class WorkerThread(QThread):
     finished = pyqtSignal(list, list) # report, issues
@@ -411,6 +442,7 @@ class MainWindow(QMainWindow):
             ("自定义分词库 (userdict)", "DICT_USER_PATH", "防止专有名词被错切分（例如“光刻机”被切成“光”、“刻机”）。", "每行直接写一个词即可，无需任何后缀。例如：<br><code>光刻机<br>PCB板</code>"),
             ("冗余词拦截库 (useless_word)", "DICT_USELESS_PATH", "匹配并拦截由于口语化产生的不规范无意义词汇（如“大致”、“相关”）。", r"每行一条规则，支持基本正则表达式。例如：<br><code>大致<br>相关[\*\b]</code>"),
             ("敏感与防错库 (minganci)", "DICT_MINGANCI_PATH", "屏蔽极度主观的词汇或形缺严重错误语（如“绝对”、“完美”）。", "每行一条规则，支持基本正则表达式。例如：<br><code>绝对<br>完美</code>"),
+            ("敏感词排除库 (minganci_exclude)", "DICT_MINGANCI_EXCLUDE_PATH", "合理场合下，屏蔽敏感词检测系统的误报警（如“最大”、“等级”）。", "每行一条完整词。例如：<br><code>最大<br>等级</code>"),
             ("特征装配关联库 (gudingdapei)", "DICT_GUDINGDAPEI_PATH", "用于提取两个技术部件之间的安装配合、固定和拓扑连接关系。", "务必使用 <code>***</code> 代表前后的机械/虚拟核心部件名。例如：<br><code>***套设在***上方<br>与***螺纹连接</code>"),
             ("位置特征拦截库 (weizhiguanxi)", "DICT_WEIZHI_PATH", "独立抽取表示方位的介词结构，辅助识别空间关联。", "类似于上述特征搭配，也必须使用 <code>***</code> 锚定对象。例如：<br><code>***位于***上方</code>"),
             ("同义词对照库 (synonyms)", "DICT_SYNONYMS_PATH", "审查权利要求特征在说明书中寻找“对应支撑”时的主动同义词扩散。", "必须在同一行使用英文逗号分隔所有同义别称。例如：<br><code>螺钉,螺栓,紧固件<br>壳体,外壳,机壳</code>")
@@ -507,12 +539,25 @@ class MainWindow(QMainWindow):
     def init_highlighters(self):
         self.highlighter_claims = PatentHighlighter(self.txt_claims.document())
         self.highlighter_specs = PatentHighlighter(self.txt_specs.document())
+        self.reload_highlighters()
         
+    def reload_highlighters(self):
         # 将配置中的正则预装到 Highlighter (红色底)
         if config.minganci_regex:
             qregex = QRegularExpression(config.minganci_regex.pattern)
             self.highlighter_claims.set_rules([qregex], QColor("#FF6B6B"))
             self.highlighter_specs.set_rules([qregex], QColor("#FF6B6B"))
+        else:
+            self.highlighter_claims.set_rules([], QColor("#FF6B6B"))
+            self.highlighter_specs.set_rules([], QColor("#FF6B6B"))
+            
+        if config.minganci_exclude_regex:
+            ex_qregex = QRegularExpression(config.minganci_exclude_regex.pattern)
+            self.highlighter_claims.set_exclude_rules([ex_qregex])
+            self.highlighter_specs.set_exclude_rules([ex_qregex])
+        else:
+            self.highlighter_claims.set_exclude_rules([])
+            self.highlighter_specs.set_exclude_rules([])
 
     def set_widget_theme(self, widget, color):
         font_color = "#000000" if color.lightness() > 128 else "#ffffff"
